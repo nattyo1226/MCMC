@@ -1,26 +1,18 @@
 module MCMC
 
-using Match
 using Random
-include("UF.jl")
+include("union_find.jl")
 
-struct Settings
-    T::Float64
-end
+export Params, montecarlo
 
-struct Ising2DParams
+struct Params
     size::Tuple{Int64, Int64}
     J::Float64
     h::Float64
+    T::Float64
 end
 
-@enum MethodUpdate::UInt8 begin
-    metropolis
-    heatbath
-    swendsen_wang
-end
-
-function init_spins_2D(
+function init_config(
     rng::AbstractRNG,
     size::Tuple{Int64, Int64},
 )::Array{Int64, 2}
@@ -28,27 +20,27 @@ function init_spins_2D(
 end
 
 function calc_Si(
-    params::Ising2DParams,
+    params::Params,
     config::Array{Int64, 2},
     index::Tuple{Int64, Int64},
 )::Int64
     size = params.size;
     indices_nearest = [
         (
-            mod(index[1] - 1, size[1]),
+            mod1(index[1] - 1, size[1]),
             index[2],
         ),
         (
-            mod(index[1], size[1]) + 1,
+            mod1(index[1] + 1, size[1]),
             index[2],
         ),
         (
             index[1],
-            mod(index[2] - 1, size[2]),
+            mod1(index[2] - 1, size[2]),
         ),
         (
             index[1],
-            mod(index[2], size[2]) + 1,
+            mod1(index[2] + 1, size[2]),
         ),
     ]
 
@@ -56,37 +48,51 @@ function calc_Si(
 end
 
 function calc_energy(
-    params::Ising2DParams,
+    params::Params,
     config::Array{Int64, 2},
 )::Float64
     size = params.size
     J = params.J
     h = params.h
 
-    return sum((-J * calc_Si(config, (ind_x, ind_y), params) / 2 - h) * config[ind_x, ind_y] for ind_x in 1:size[1], ind_y in 1:size[2])
+    return sum(
+        (-J * calc_Si(params, config, (ind_x, ind_y)) / 2 - h) * config[ind_x, ind_y] for
+        ind_x in 1:size[1], ind_y in 1:size[2]
+    )
 end
 
 function calc_energy_delta(
-    params::Ising2DParams,
+    params::Params,
     config::Array{Int64, 2},
     index::Tuple{Int64, Int64},
 )::Float64
     J = params.J
     h = params.h
 
-    Si = calc_Si(config, index, params)
+    Si = calc_Si(params, config, index)
     return 2 * (J * Si + h) * config[index...]
+end
+
+function calc_magnetization(
+    config::Array{Int64, 2},
+)::Float64
+    return sum(config) / length(config)
+end
+
+function calc_magnetization2(
+    config::Array{Int64, 2},
+)::Float64
+    return sum(config .^ 2) / length(config)
 end
 
 function update_metropolis!(
     rng::AbstractRNG,
-    params::Ising2DParams,
-    settings::Settings,
+    params::Params,
     config::Array{Int64, 2},
     index::Tuple{Int64, Int64},
 )
-    T = settings.T
-    dE = calc_energy_delta(config, index, params)
+    T = params.T
+    dE = calc_energy_delta(params, config, index)
     if rand(rng) <= exp(-dE / T)
         config[index...] *= -1
     end
@@ -94,13 +100,12 @@ end
 
 function update_heatbath!(
     rng::AbstractRNG,
-    params::Ising2DParams,
-    settings::Settings,
+    params::Params,
     config::Array{Int64, 2},
     index::Tuple{Int64, Int64},
 )
-    T = settings.T
-    dE = calc_energy_delta(config, index, params)
+    T = params.T
+    dE = calc_energy_delta(params, config, index)
     if rand(rng) <= exp(-dE / T) / (1 + exp(-dE / T))
         config[index...] *= -1
     end
@@ -108,15 +113,14 @@ end
 
 function connect_bonds!(
     rng::AbstractRNG,
-    params::Ising2DParams,
-    settings::Settings,
+    params::Params,
     config::Array{Int64, 2},
-    cluster::UF.UnionFind,
+    cluster::UnionFind,
     index_1::Tuple{Int64, Int64},
     index_2::Tuple{Int64, Int64},
 )
     J = params.J
-    T = settings.T
+    T = params.T
     if (config[index_1...] * config[index_2...] > 0) && (rand(rng) <= e^(-2 * J / T))
         size = params.size
         ind_1 = index_1[1] + (index_1[2] - 1) * size[2]
@@ -127,60 +131,104 @@ end
 
 function update_swendsen_wang!(
     rng::AbstractRNG,
-    params::Ising2DParams,
-    settings::Settings,
+    params::Params,
     config::Array{Int64, 2},
 )
     if params.h != 0
-        throw(ArgumentError("Swendsen-Wang algorithm is valid where external magnetic filed h = 0"))
+        throw(
+            ArgumentError(
+                "Swendsen-Wang algorithm is valid where external magnetic field h = 0",
+            ),
+        )
     end
 
     size = params.size
-    
-    cluster = UF.UnionFind(*(size...))
+
+    cluster = UnionFind(*(size...))
     flip = rand(rng, [-1, 1], size)
-    
+
     for i in 1:size[1]
         for j in 1:size[2]
-            connect_bonds!(rng, params, settings, config, cluster, (i, j), (mod(i, size[1]) + 1, j))
-            connect_bonds!(rng, params, settings, config, cluster, (i, j), (i, mod(j, size[2]) + 1))
+            connect_bonds!(
+                rng,
+                params,
+                config,
+                cluster,
+                (i, j),
+                (mod1(i, size[1]), j),
+            )
+            connect_bonds!(
+                rng,
+                params,
+                config,
+                cluster,
+                (i, j),
+                (i, mod1(j, size[2])),
+            )
         end
     end
 
-    for i in 1:*(size...)
-        root = UF.get_root(cluster, i)
+    for i in 1:(*(size...))
+        root = get_root(cluster, i)
         config[i] = flip[root]
     end
 end
 
 function update_config!(
     rng::AbstractRNG,
-    params::Ising2DParams,
-    settings::Settings,
+    params::Params,
     config::Array{Int64, 2},
-    method::MethodUpdate,
+    method::String,
 )
-    @match method begin
-        MethodUpdate::metropolis => begin
-            size = params.size
-            for i in 1:size[1]
-                for j in 1:size[2]
-                    update_metropolis!(rng, config, (i, j), params, settings)
-                end
+    if method == "metropolis"
+        size = params.size
+        for i in 1:size[1]
+            for j in 1:size[2]
+                update_metropolis!(rng, params, config, (i, j))
             end
         end
-        MethodUpdate::heatbath => begin
-            size = params.size
-            for i in 1:size[1]
-                for j in 1:size[2]
-                    update_heatbath!(rng, config, (i, j), params, settings)
-                end
+    elseif method == "heatbath"
+        size = params.size
+        for i in 1:size[1]
+            for j in 1:size[2]
+                update_heatbath!(rng, params, config, (i, j))
             end
         end
-        MethodUpdate::swendsen_wang => begin
-            update_swendsen_wang!(rng, config, params, settings)
+    elseif method == "swendsen_wang"
+        update_swendsen_wang!(rng, params, config)
+    else
+        throw(ArgumentError("There is no method: $method"))
+    end
+end
+
+function montecarlo(
+    rng::AbstractRNG,
+    params::Params,
+    num_step_equilibration::Int64,
+    num_step_measurement::Int64,
+    interval_measurement::Int64,
+    method::String,
+)::Tuple{Array{Float64, 1}, Array{Float64, 1}, Array{Float64, 1}}
+    size = params.size
+    config = init_config(rng, size)
+    Es = Float64[]
+    Ms = Float64[]
+    M2s = Float64[]
+
+    for step in 1:(num_step_equilibration + num_step_measurement)
+        update_config!(rng, params, config, method)
+
+        if (step > num_step_equilibration) && (trial % interval_measurement == 0)
+            E = calc_energy(params, config)
+            M = calc_magnetization(config)
+            M2 = calc_magnetization2(config)
+            push!(Es, E)
+            push!(Ms, M)
+            push!(M2s, M2)
         end
     end
+
+    return Es, Ms, M2s
 end
 
 end
