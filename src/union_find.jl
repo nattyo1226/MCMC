@@ -1,12 +1,8 @@
-module UF
-
-export UnionFind,get_root, unite!
-
 struct UnionFind
     parent::Array{Int64, 1}
 
     function UnionFind(N::Int64)
-        new([i for i in 1:N])
+        return new([i for i in 1:N])
     end
 end
 
@@ -44,6 +40,4 @@ function unite!(
     if (root_1 != root_2)
         union_find.parent[max(root_1, root_2)] = min(root_1, root_2)
     end
-end
-
 end
