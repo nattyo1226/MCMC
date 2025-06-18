@@ -18,17 +18,6 @@ function get_root(
     end
 end
 
-# function has_same_root(
-#     union_find::UnionFind,
-#     index_1::Int64,
-#     index_2::Int64,
-# )
-#     root_1 = get_root(union_find, index_1)
-#     root_2 = get_root(union_find, index_2)
-
-#     return root_1 == root_2
-# end
-
 function unite!(
     union_find::UnionFind,
     index_1::Int64,
