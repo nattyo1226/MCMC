@@ -3,7 +3,7 @@ module MCMC
 using Random
 include("union_find.jl")
 
-export Params, montecarlo
+export Params, montecarlo, calc_autocorrelation, calc_integrated_correlation_times
 
 struct Params
     size::Tuple{Int64, Int64}
@@ -44,7 +44,7 @@ function calc_Si(
         ),
     ]
 
-    return sum(config(ind...) for ind in indices_nearest)
+    return sum(config[ind...] for ind in indices_nearest)
 end
 
 function calc_energy(
@@ -77,12 +77,6 @@ function calc_magnetization(
     config::Array{Int64, 2},
 )::Float64
     return sum(config) / length(config)
-end
-
-function calc_magnetization2(
-    config::Array{Int64, 2},
-)::Float64
-    return sum(config .^ 2) / length(config)
 end
 
 function update_metropolis!(
@@ -121,11 +115,11 @@ function connect_bonds!(
 )
     J = params.J
     T = params.T
-    if (config[index_1...] * config[index_2...] > 0) && (rand(rng) <= e^(-2 * J / T))
+    if (config[index_1...] * config[index_2...] > 0) && (rand(rng) <= 1 - exp(-2 * J / T))
         size = params.size
         ind_1 = index_1[1] + (index_1[2] - 1) * size[2]
         ind_2 = index_2[1] + (index_2[2] - 1) * size[2]
-        UF.unite!(cluster, ind_1, ind_2)
+        unite!(cluster, ind_1, ind_2)
     end
 end
 
@@ -155,7 +149,7 @@ function update_swendsen_wang!(
                 config,
                 cluster,
                 (i, j),
-                (mod1(i, size[1]), j),
+                (mod1(i + 1, size[1]), j),
             )
             connect_bonds!(
                 rng,
@@ -163,7 +157,7 @@ function update_swendsen_wang!(
                 config,
                 cluster,
                 (i, j),
-                (i, mod1(j, size[2])),
+                (i, mod1(j + 1, size[2])),
             )
         end
     end
@@ -204,31 +198,60 @@ end
 function montecarlo(
     rng::AbstractRNG,
     params::Params,
-    num_step_equilibration::Int64,
+    num_step_thermalization::Int64,
     num_step_measurement::Int64,
     interval_measurement::Int64,
     method::String,
-)::Tuple{Array{Float64, 1}, Array{Float64, 1}, Array{Float64, 1}}
+)::Tuple{Array{Float64, 1}, Array{Float64, 1}}
     size = params.size
     config = init_config(rng, size)
     Es = Float64[]
     Ms = Float64[]
-    M2s = Float64[]
 
-    for step in 1:(num_step_equilibration + num_step_measurement)
+    for step in 1:(num_step_thermalization + num_step_measurement)
         update_config!(rng, params, config, method)
 
-        if (step > num_step_equilibration) && (trial % interval_measurement == 0)
-            E = calc_energy(params, config)
+        if (step > num_step_thermalization) && (step % interval_measurement == 0)
+            E = calc_energy(params, config) / *(size...)
             M = calc_magnetization(config)
-            M2 = calc_magnetization2(config)
             push!(Es, E)
             push!(Ms, M)
-            push!(M2s, M2)
         end
     end
 
-    return Es, Ms, M2s
+    return Es, Ms
+end
+
+function calc_correlation(
+    obs_1::Array{Float64, 1},
+    obs_2::Array{Float64, 1},
+)
+    dev_obs_1 = obs_1 .- sum(obs_1) / length(obs_1)
+    dev_obs_2 = obs_2 .- sum(obs_2) / length(obs_2)
+
+    return [
+        sum(
+            dev_obs_1[n] * dev_obs_2[n + k]
+            for n in 1:length(dev_obs_1) - k
+        ) / (length(dev_obs_1) - k)
+        for k in 0:length(dev_obs_1) - 1
+    ]
+end
+
+function calc_autocorrelation(
+    obs::Array{Float64, 1},
+)
+    return calc_correlation(obs, obs)
+end
+
+function calc_integrated_correlation_times(
+    obs::Array{Float64, 1},
+)
+    cor_obs = calc_autocorrelation(obs)
+    return [
+        sum(cor_obs[i] / cor_obs[1] for i in 1:n)
+        for n in 1:length(cor_obs)
+    ]
 end
 
 end
